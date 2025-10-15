@@ -1,0 +1,401 @@
+---
+title: "gazella_nomock_workflow"
+output: html_document
+---
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+```{r load library, echo=FALSE}
+
+library(readxl)
+library(vegan)
+library(ggplot2)
+library(utils)
+library(biomformat)
+library(phyloseq)
+library(EcolUtils)
+library(tidyverse)
+library(magrittr)
+library(ggrepel)
+library(broom)
+library(devtools)
+library(pairwiseAdonis)
+library(indicspecies)
+
+```
+```{r import files, echo=FALSE}
+
+metadata_txt <- read_excel("metadata_beetle.xlsx")
+
+my_biom <- read_hdf5_biom("./nomock-all-filtered-table/data/feature-table.biom")
+write_biom(my_biom, "formatted_my_biom")
+my_biom <- read_biom("formatted_my_biom")
+
+OTU_table <- as.data.frame(as.matrix(biom_data(my_biom)))
+OTU_taxonomy <- read.delim("./unzip_taxonomy/data/taxonomy.tsv", row.names=1)
+```
+
+```{r merge taxonomy and metadata, echo=FALSE}
+OTU_table_plus_taxonomy <- as.data.frame(merge(OTU_taxonomy, 
+                                               OTU_table, by.x = "row.names", by.y = "row.names"))
+
+
+OTU_no_mock <- OTU_table_plus_taxonomy[,!(names(OTU_table_plus_taxonomy) %in% c("Mock"))]
+
+
+OTU_table_no_unassigned <- OTU_no_mock[!grepl("Unassigned", 
+                                              OTU_no_mock$`Taxon`),]
+
+
+OTU_table_no_mito <- OTU_table_no_unassigned[!grepl("Mitochondria",
+                                                      OTU_table_no_unassigned$`Taxon`),]
+
+OTU_table_no_chloro <- OTU_table_no_mito[!grepl("Chloroplast",
+                                                      OTU_table_no_mito$`Taxon`),]
+
+
+OTU_table_all_phyla <- OTU_table_no_chloro[grepl("d__Bacteria; p__", 
+                                                 OTU_table_no_chloro$`Taxon`),]
+row.names(OTU_table_all_phyla) <- OTU_table_all_phyla$Row.names
+
+
+
+OTU_clean <- as.data.frame(t(OTU_table_all_phyla[,4:ncol(OTU_table_all_phyla)]))
+
+
+row.names(metadata_txt) <- metadata_txt$sampleid
+
+# Check if row names exist and are the same in both data frames
+all(rownames(metadata_txt) %in% rownames(OTU_clean))
+
+# Subset metadata_txt to include only rows that are also in OTU_clean
+metadata_txt <- metadata_txt[rownames(metadata_txt) %in% rownames(OTU_clean), ]
+
+row.names(metadata_txt) <- metadata_txt$sampleid
+
+# Convert row names to a column for merging
+OTU_clean$sampleid <- rownames(OTU_clean)
+
+# Merge the two data frames by the 'sampleid' column
+merged_OTU_metadata <- merge(metadata_txt, OTU_clean, by = "sampleid")
+
+# If you want to remove the 'sampleid' column after merging and set it back as row names
+rownames(merged_OTU_metadata) <- merged_OTU_metadata$sampleid
+#if i want to get rid of the sampleid column
+OTU_clean$sampleid <- NULL
+
+
+
+
+```
+
+```{r rarefaction-try not to do again}
+sort(rowSums(OTU_clean))
+barplot(sort(rowSums(OTU_clean)), ylim = c(0, max(rowSums(OTU_clean))), 
+        xlim = c(0, NROW(OTU_clean)), col = "Blue", ylab = "Read Depth", xlab = "Sample") 
+rarecurve(OTU_clean, step = 1000, label = FALSE)
+axis(side = 1, at = seq(0, 100000, by=2000))
+
+
+Rd <- 4200
+rared_OTU <- as.data.frame((rrarefy.perm(OTU_clean, sample = Rd, n = 30, round.out = T)))
+
+write.table(t(rared_OTU), file = "OTU_filtered_plus_rarefied_all_samples.tsv", quote=FALSE, sep='\t', col.names = NA)
+
+
+
+```
+```{r alpha diversity}
+#Shannon diversity is a method of alpha-diversity.
+shannon <- as.data.frame(diversity(rared_OTU, index = "shannon"))
+
+#Merge with metadata to create a plot.
+
+shannon$sampleid <- rownames(shannon)
+
+# Merge the two data frames by the 'sampleid' column
+merged_alpha <- merge(shannon, metadata_txt, by = "sampleid")
+
+# If you want to remove the 'sampleid' column after merging and set it back as row names
+rownames(merged_alpha) <- merged_alpha$sampleid
+#if i want to get rid of the sampleid column
+shannon$sampleid <- NULL
+
+
+#Test significance in alpha diversity
+
+Diet <- as.factor(merged_alpha$Diet)
+Treatment <- as.factor(merged_alpha$Treatment)
+# Compute the analysis of variance
+# Summary of the analysis
+aov <- aov(formula = merged_alpha$`diversity(rared_OTU, index = "shannon")` ~ Diet*Treatment)
+summary(aov)
+
+
+#Plotting alpha diversity:
+Diet <- as.factor(merged_alpha$Diet)
+
+#plot. use scale_fill_manual to change colors of box plots
+ggplot(data = merged_alpha) +
+  aes(x = Diet, y = merged_alpha$`diversity(rared_OTU, index = "shannon")`, 
+      fill = Diet) +
+  geom_boxplot(color="black", outlier.shape = NA, lwd = 1) +
+  labs(title = 'Shannon alpha-diversity', subtitle = bquote('Diet: P < 0.05,'~F[2.24]~'= 27.27'), 
+       x = 'Diet', y = 'Shannon index', fill = 'Diet') + scale_fill_manual(values=c('tomato','steelblue', 'plum3'))+ scale_x_discrete(name ="Diet", 
+                   limits=c("Silage", "Hay", "Grass"))+ theme_classic(base_size = 14, base_line_size = 1)+
+  geom_jitter()
+
+
+#To save the plot onto folder
+
+ggsave(filename="Alpha_diversity_hindgut_diet.png") 
+
+
+#plot by treatment instead
+ggplot(data = merged_alpha) +
+  aes(x = Treatment, y = merged_alpha$`diversity(rared_OTU, index = "shannon")`, 
+      fill = Treatment) +
+  geom_boxplot(color="black", outlier.shape = NA, lwd = 1) +
+  labs(title = 'Shannon alpha-diversity', subtitle = bquote('Diet: P < 0.05,'~F[1.24]~'= 4.89'), 
+       x = 'Treatment', y = 'Shannon index', fill = 'Treatment') + scale_fill_manual(values=c('grey','grey'))+ scale_x_discrete(name ="Treatment", 
+                   limits=c("AB", "MIB"))+ theme_classic(base_size = 14, base_line_size = 1)+
+  geom_jitter()
+
+
+#To save the plot onto folder
+
+ggsave(filename="Alpha_diversity_hindgut_treatment.png")
+
+
+#Test significance among group means. Note the p-values.
+#Change factor_X to metadata category of interest.
+
+TukeyHSD(aov(formula = merged_alpha$`diversity(rared_OTU, index = "shannon")` ~ Diet+Treatment))
+
+TukeyHSD(aov(formula = merged_alpha$`diversity(rared_OTU, index = "shannon")` ~ Treatment))
+
+```
+
+```{r beta diversity set up coordinates}
+
+NMDS1 <- metaMDS(rared_OTU, distance = "bray", k = 2)
+
+coordinates <- data.frame(NMDS1$points[,1:2])
+
+
+plot(x = coordinates$MDS1, y = coordinates$MDS2)
+
+
+coordinates$sampleid <- rownames(coordinates)
+
+nmds_plus_metadata <- merge(coordinates, metadata_txt, by = "sampleid")
+
+rownames(nmds_plus_metadata ) <- nmds_plus_metadata $sampleid
+
+coordinates$sampleid <- NULL
+
+Diet <- as.factor(nmds_plus_metadata$Diet)
+Type <- as.factor(nmds_plus_metadata$Type)
+Treatment <- as.factor(nmds_plus_metadata$Treatment)
+Treatment_Type <- as.factor(nmds_plus_metadata$Treatment_Type)
+
+#Plot
+
+ggplot(data = nmds_plus_metadata) +
+  aes(x = MDS1, y = MDS2, color = Diet)+ 
+  geom_point() +
+  labs(col = "Diet")+geom_polygon()
+
+ggplot(data = nmds_plus_metadata) +
+  aes(x = MDS1, y = MDS2, color = Type)+ 
+  geom_point() +
+  labs(col = "Type")+geom_polygon()
+
+ggplot(data = nmds_plus_metadata) +
+  aes(x = MDS1, y = MDS2, color = Treatment)+ 
+  geom_point() +
+  labs(col = "Treatment")+geom_polygon()
+
+ggplot(data = nmds_plus_metadata) +
+  aes(x = MDS1, y = MDS2, color = Treatment_Type)+ 
+  geom_point() +
+  labs(col = "Treatment_Type")+geom_polygon()
+
+
+rared_OTU$sampleid <- rownames(rared_OTU)
+
+OTU_plus_metadata <- merge(rared_OTU, metadata_txt, by = "sampleid")
+
+
+rownames(OTU_plus_metadata) <- OTU_plus_metadata$sampleid
+
+rared_OTU$sampleid <- NULL
+OTU_plus_metadata$sampleid <- NULL
+
+
+```
+
+
+```{r beta diversity plot}
+
+ggplot(data = nmds_plus_metadata) +
+aes(x = MDS1, y = MDS2, color = Diet)+ #Creates and colors legend to match, modify after $.
+  geom_point(size=3) +
+  labs(col = "Diet") + #Renames legend, modifiable within quotes.
+  ggtitle("NMDS All") + #Adds tittle and subtitle. 
+  # Can modify p and r-squared values + title.
+  theme_classic(base_size = 14, base_line_size = .5)
+
+
+ggplot(data = nmds_plus_metadata) +
+  aes(x = MDS1, y = MDS2, group = Diet)+ #Creates and colors legend to match, modify after $.
+  geom_point(aes(shape=Treatment_Type, color=Diet), size=7, stroke = 2) +
+  scale_shape_manual(values=c(0,15,8,1, 19,3,9,4))+
+  scale_color_manual(values=c('tomato', 'steelblue', 'grey50', 'plum3'))+ 
+  labs(col = "Diet") + #Renames legend, modifiable within quotes.
+  ggtitle("NMDS ALL") +#Adds tittle and subtitle. 
+  # Can modify p and r-squared values + title.
+  theme_classic(base_size = 14, base_line_size = .5)
+
+
+#no legend
+ggplot(data = nmds_plus_metadata) +
+  aes(x = MDS1, y = MDS2, group = Diet)+ #Creates and colors legend to match, modify after $.
+  geom_point(aes(shape=Treatment_Type, color=Diet), size=7, stroke = 2) +
+  scale_shape_manual(values=c(0,15,8,1, 19,3,9,4))+
+  scale_color_manual(values=c('tomato', 'steelblue', 'grey50', 'plum3'))+ 
+  labs(col = "Diet") + #Renames legend, modifiable within quotes.
+  ggtitle("NMDS ALL") +#Adds tittle and subtitle. 
+  # Can modify p and r-squared values + title.
+  theme_classic(base_size = 14, base_line_size = .5) + theme(legend.position = "none")
+
+#save nmds plot
+ggsave(filename="NMDS_ALL_no_legend.png", width=10, height=8)
+
+
+
+
+```
+
+
+```{r add vectors to plot, finding features}
+#MAKING BIPLOT FOR FEATURE VECTORS
+OTU_table_individual<-rared_OTU %>%
+  as_tibble(rownames="Individual")
+
+subsample_tbl <- OTU_table_individual %>%
+  pivot_longer(-Individual)%>%
+  group_by(Individual) %>%
+  mutate(total = sum(value)) %>%
+  filter(total > 7700) %>%
+  uncount(value) %>%
+  slice_sample(n=7700) %>%
+  count(Individual, name) %>%
+  pivot_wider(names_from="name", values_from="n", values_fill=0) %>%
+  pivot_longer(-Individual)
+
+
+nmds_positions <- scores(NMDS1) %>%
+  as_tibble(rownames="Individual")
+
+subsample_tbl
+nmds_positions
+
+nmds_shared<- inner_join(subsample_tbl, nmds_positions)
+
+library(broom)
+cor_x <- nmds_shared %>%
+  nest(data = -name) %>%
+  mutate(cor_x = map(data, 
+                     ~cor.test(.x$value, .x$NMDS1, 
+                               method="spearman", 
+                               exact=FALSE) %>% tidy())) %>%
+  unnest(cor_x) %>%
+  select(name, estimate, p.value)
+
+cor_x
+
+cor_y <- nmds_shared %>%
+  nest(data = -name) %>%
+  mutate(cor_y = map(data, 
+                     ~cor.test(.x$value, .x$NMDS2, 
+                               method="spearman", 
+                               exact=FALSE) %>% tidy())) %>%
+  unnest(cor_y) %>%
+  select(name, estimate, p.value)
+
+cor_y
+
+correlations <- inner_join(cor_x, cor_y, by="name")
+```
+
+
+```{r add vectors to plot, choosing cutoff}
+#choose cutoff and adjust by how many taxa you want to have as high correlation
+#could shrink or increase p value 
+#has 111
+correlations %>%
+  filter(p.value.x < 0.1 | p.value.y < 0.1)
+
+
+#with p=0.05 has 73 taxa
+correlations %>%
+  filter(p.value.x < 0.05 | p.value.y < 0.05)
+```
+
+
+```{r add vectors to plot, choosing cutoff}
+#with p=0.005 has 25 taxa
+correlations %>%
+  filter(p.value.x < 0.005 | p.value.y < 0.005)
+```
+
+
+```{r add vectors to plot, choosing cutoff}
+#with p=0.0015 has 10 taxa
+correlations %>%
+  filter(p.value.x < 0.0015 | p.value.y < 0.0015)
+```
+
+
+
+```{r add vectors to plot, choosing cutoff}
+#with p=0.015 has 34 taxa
+correlations %>%
+  filter(p.value.x < 0.015 | p.value.y < 0.015)
+```
+
+
+```{r add vectors to plot, choosing cutoff}
+#try estimate as a filter has 20 taxa
+correlations %>%
+  filter(abs(estimate.x) > 0.75 | abs(estimate.y) > 0.75)
+```
+
+
+```{r add vectors to plot, choosing cutoff}
+#going to go with p value of 0.0015
+high_corr<- correlations %>%
+  filter(p.value.x < 0.0015 | p.value.y < 0.0015)
+
+high_corr
+
+high_corr %>%
+  ggplot(aes(x=0, xend=estimate.x, y=0, yend=estimate.y)) +
+  geom_segment()
+```
+
+
+```{r indicator species analysis}
+#INDICATOR SPECIES
+library(indicspecies)
+
+indicatorsp = multipatt(OTU_plus_metadata[,1:NCOL(rared_OTU)], OTU_plus_metadata$Location, func = "r.g", control = how(nperm=9999))
+summary(indicatorsp)
+
+
+```
+

@@ -1,0 +1,936 @@
+qiime tools import \
+  --type 'SampleData[PairedEndSequencesWithQuality]' \
+  --input-path manifest.txt \
+  --output-path paired-end-demux.qza \
+  --input-format PairedEndFastqManifestPhred33V2
+  
+qiime demux summarize \
+  --i-data paired-end-demux.qza \
+  --o-visualization paired-end-demux.qzv
+
+
+qiime dada2 denoise-paired \
+  --i-demultiplexed-seqs paired-end-demux.qza \
+  --p-trim-left-f 0 \
+  --p-trim-left-r 0 \
+  --p-trunc-len-f 250 \
+  --p-trunc-len-r 220 \
+  --o-representative-sequences rep-seqs-dada2.qza \
+  --o-table table-dada2.qza \
+  --o-denoising-stats stats-dada2.qza
+
+
+qiime metadata tabulate \
+  --m-input-file stats-dada2.qza \
+  --o-visualization stats-dada2.qzv
+  
+
+
+qiime feature-table summarize \
+  --i-table table-dada2.qza \
+  --o-visualization table-dada2.qzv \
+  --m-sample-metadata-file beetle_metadata.tsv
+
+
+qiime feature-table tabulate-seqs \
+  --i-data rep-seqs-dada2.qza \
+  --o-visualization rep-seqs-dada2.qzv
+ 
+
+#make phylogenetic tree for diversity analysis
+
+module load miniconda3/24.9.2
+conda init
+conda activate qiime2-amplicon-2024.10
+
+qiime phylogeny align-to-tree-mafft-fasttree \
+  --i-sequences rep-seqs-dada2.qza \
+  --o-alignment aligned-rep-seqs.qza \
+  --o-masked-alignment masked-aligned-rep-seqs.qza \
+  --o-tree unrooted-tree.qza \
+  --o-rooted-tree rooted-tree.qza
+
+Saved FeatureData[AlignedSequence] to: aligned-rep-seqs.qza
+Saved FeatureData[AlignedSequence] to: masked-aligned-rep-seqs.qza
+Saved Phylogeny[Unrooted] to: unrooted-tree.qza
+Saved Phylogeny[Rooted] to: rooted-tree.qza
+
+  
+#train classifier for taxonomic classification. Use silva database trained for V3-V4 region:
+wget https://data.qiime2.org/2024.10/common/silva-138-99-seqs.qza
+wget https://data.qiime2.org/2024.10/common/silva-138-99-tax.qza
+
+16S Amplicon Forward (V3 region): 5’-TCGTCGGCAGCGTCAGATGTGTATAAGAGACAGCCTACG GGNGGCWGCAG-3’
+16S Amplicon Reverse (V4 region): 5’-GTCTCGTGGGCTCG GAGATGTGTATAAGAGACAGGACTACHVGGGTATCTAATCC-3’
+
+
+#!/bin/sh
+
+
+module load miniconda3/24.9.2
+conda activate qiime2-amplicon-2024.10
+
+qiime feature-classifier extract-reads \
+  --i-sequences silva-138-99-seqs.qza \
+  --p-f-primer CCTACGGGNGGCWGCAG \
+  --p-r-primer GACTACHVGGGTATCTAATCC \
+  --p-min-length 100 \
+  --p-max-length 400 \
+  --o-reads silva-138-99-v3v4.qza
+
+#!/bin/sh
+
+
+module load miniconda3/24.9.2
+conda activate qiime2-amplicon-2024.10
+
+qiime feature-classifier fit-classifier-naive-bayes \
+  --i-reference-reads silva-138-99-v3v4.qza \
+  --i-reference-taxonomy silva-138-99-tax.qza \
+  --o-classifier silva-138-99-v3v4-classifier.qza
+
+
+#!/bin/sh
+
+
+module load miniconda3/24.9.2
+conda activate qiime2-amplicon-2024.10
+
+qiime feature-classifier classify-sklearn \
+  --i-classifier silva-138-99-v3v4-classifier.qza \
+  --i-reads rep-seqs-dada2.qza \
+  --o-classification taxonomy.qza
+
+
+#rename table-dada2.qza to table.qza just for ease of the following commands
+
+
+#only include taxa that have a phyla level
+qiime taxa filter-table \
+  --i-table table-dada2.qza \
+  --i-taxonomy taxonomy.qza \
+  --p-include p__ \
+  --o-filtered-table table-with-phyla.qza
+#Saved FeatureTable[Frequency] to: table-with-phyla.qza  
+  
+qiime feature-table summarize \
+  --i-table table-with-phyla.qza \
+  --o-visualization table-with-phyla.qzv \
+  --m-sample-metadata-file beetle_metadata.tsv
+
+#Saved Visualization to: table-with-phyla.qzv
+
+
+
+qiime taxa filter-table \
+  --i-table table-with-phyla.qza \
+  --i-taxonomy taxonomy.qza \
+  --p-exclude mitochondria,chloroplast \
+  --o-filtered-table filtered-table.qza
+
+#Saved FeatureTable[Frequency] to: filtered-table.qza  
+
+
+qiime feature-table summarize \
+  --i-table filtered-table.qza \
+  --o-visualization filtered-table.qzv \
+  --m-sample-metadata-file beetle_metadata.tsv
+
+#Saved Visualization to: filtered-table.qzv
+  
+
+
+
+qiime metadata tabulate \
+  --m-input-file taxonomy.qza \
+  --o-visualization taxonomy.qzv
+  
+
+
+#alpha and beta diversity analysis
+
+qiime diversity alpha-rarefaction \
+  --i-table filtered-table.qza \
+  --i-phylogeny rooted-tree.qza \
+  --p-max-depth 160 \
+  --m-metadata-file beetle_metadata.tsv \
+  --o-visualization keep-mock-filtered-alpha-rarefaction.qzv 
+
+#Saved Visualization to: keep-mock-filtered-alpha-rarefaction.qzv
+
+#!/bin/sh
+
+
+module load miniconda3/24.9.2
+conda activate qiime2-amplicon-2024.10
+
+qiime diversity core-metrics-phylogenetic \
+  --i-phylogeny rooted-tree.qza \
+  --i-table filtered-table.qza \
+  --p-sampling-depth 160 \
+  --m-metadata-file beetle_metadata.tsv \
+  --output-dir core-metrics-results-all
+
+
+
+qiime diversity alpha-group-significance \
+  --i-alpha-diversity core-metrics-results-all/faith_pd_vector.qza \
+  --m-metadata-file beetle_metadata.tsv \
+  --o-visualization core-metrics-results-all/faith-pd-group-significance.qzv
+
+qiime diversity alpha-group-significance \
+  --i-alpha-diversity core-metrics-results-all/evenness_vector.qza \
+  --m-metadata-file beetle_metadata.tsv \
+  --o-visualization core-metrics-results-all/evenness-group-significance.qzv
+
+
+
+#qiime diversity by Type
+
+#!/bin/sh
+
+
+module load miniconda3/24.9.2
+conda activate qiime2-amplicon-2024.10
+
+qiime diversity beta-group-significance \
+  --i-distance-matrix core-metrics-results-all/weighted_unifrac_distance_matrix.qza \
+  --m-metadata-file beetle_metadata.tsv \
+  --m-metadata-column Type \
+  --o-visualization core-metrics-results-all/weighted-unifrac-type-significance.qzv \
+  --p-pairwise
+
+#qiime diversity by Diet
+
+#!/bin/sh
+
+
+module load miniconda3/24.9.2
+conda activate qiime2-amplicon-2024.10
+
+qiime diversity beta-group-significance \
+  --i-distance-matrix core-metrics-results-all/weighted_unifrac_distance_matrix.qza \
+  --m-metadata-file beetle_metadata.tsv \
+  --m-metadata-column Diet \
+  --o-visualization core-metrics-results-all/weighted-unifrac-diet-significance.qzv \
+  --p-pairwise
+
+
+
+#taxa bar plots
+
+#!/bin/sh
+
+
+module load miniconda3/24.9.2
+conda activate qiime2-amplicon-2024.10
+
+qiime taxa barplot \
+  --i-table filtered-table.qza \
+  --i-taxonomy taxonomy.qza \
+  --m-metadata-file beetle_metadata.tsv \
+  --o-visualization all-taxa-bar-plots.qzv
+
+#Saved Visualization to: all-taxa-bar-plots.qzv
+
+
+qiime diversity beta-rarefaction \
+  --i-table filtered-table.qza \
+  --p-metric braycurtis \
+  --p-clustering-method upgma \
+  --m-metadata-file beetle_metadata.tsv \
+  --p-sampling-depth 180 \
+  --i-phylogeny rooted-tree.qza \
+  --p-correlation-method spearman \
+  --output-dir all_species_all_sites_beta_rarefaction_upgma
+ 
+
+
+#Type: Hindgut to compare Diet and Treatment
+qiime feature-table filter-samples \
+  --i-table filtered-table.qza \
+  --m-metadata-file beetle_metadata.tsv \
+  --p-where "[Type] IN ('Hindgut')" \
+  --o-filtered-table hindgut-filtered-table.qza
+  
+#make sure to transform to visualization files
+qiime feature-table summarize \
+  --i-table hindgut-filtered-table.qza \
+  --o-visualization hindgut-filtered-table.qzv \
+  --m-sample-metadata-file beetle_metadata.tsv
+  
+
+#alpha and beta diversity analysis
+
+qiime diversity alpha-rarefaction \
+  --i-table hindgut-filtered-table.qza \
+  --i-phylogeny rooted-tree.qza \
+  --p-max-depth 7700 \
+  --m-metadata-file beetle_metadata.tsv \
+  --o-visualization hindgut-filtered-alpha-rarefaction.qzv 
+
+
+
+#!/bin/sh
+
+
+module load miniconda3/24.9.2
+conda activate qiime2-amplicon-2024.10
+
+qiime diversity core-metrics-phylogenetic \
+  --i-phylogeny rooted-tree.qza \
+  --i-table hindgut-filtered-table.qza \
+  --p-sampling-depth 7700 \
+  --m-metadata-file beetle_metadata.tsv \
+  --output-dir core-metrics-results-hindgut-7700
+
+
+qiime diversity alpha-group-significance \
+  --i-alpha-diversity core-metrics-results-hindgut/faith_pd_vector.qza \
+  --m-metadata-file beetle_metadata.tsv \
+  --o-visualization core-metrics-results-hindgut/faith-pd-group-significance.qzv
+
+qiime diversity alpha-group-significance \
+  --i-alpha-diversity core-metrics-results-hindgut/evenness_vector.qza \
+  --m-metadata-file beetle_metadata.tsv \
+  --o-visualization core-metrics-results-hindgut/evenness-group-significance.qzv
+
+qiime diversity alpha-group-significance \
+  --i-alpha-diversity core-metrics-results-hindgut-7700/faith_pd_vector.qza \
+  --m-metadata-file beetle_metadata.tsv \
+  --o-visualization core-metrics-results-hindgut-7700/faith-pd-group-significance.qzv
+
+qiime diversity alpha-group-significance \
+  --i-alpha-diversity core-metrics-results-hindgut-7700/evenness_vector.qza \
+  --m-metadata-file beetle_metadata.tsv \
+  --o-visualization core-metrics-results-hindgut-7700/evenness-group-significance.qzv
+  
+#!/bin/sh
+
+
+module load miniconda3/24.9.2
+conda activate qiime2-amplicon-2024.10
+
+qiime diversity beta-group-significance \
+  --i-distance-matrix core-metrics-results-hindgut/weighted_unifrac_distance_matrix.qza \
+  --m-metadata-file beetle_metadata.tsv \
+  --m-metadata-column Diet \
+  --o-visualization core-metrics-results-hindgut/weighted-unifrac-diet-significance.qzv \
+  --p-pairwise
+
+#qiime diversity Treatment
+
+#!/bin/sh
+
+
+module load miniconda3/24.9.2
+conda activate qiime2-amplicon-2024.10
+
+qiime diversity beta-group-significance \
+  --i-distance-matrix core-metrics-results-hindgut/weighted_unifrac_distance_matrix.qza \
+  --m-metadata-file beetle_metadata.tsv \
+  --m-metadata-column Treatment \
+  --o-visualization core-metrics-results-hindgut/weighted-unifrac-treatment-significance.qzv \
+  --p-pairwise
+
+
+
+#qiime diversity by Diet
+
+#!/bin/sh
+
+
+module load miniconda3/24.9.2
+conda activate qiime2-amplicon-2024.10
+
+qiime diversity beta-group-significance \
+  --i-distance-matrix core-metrics-results-hindgut-7700/weighted_unifrac_distance_matrix.qza \
+  --m-metadata-file beetle_metadata.tsv \
+  --m-metadata-column Diet \
+  --o-visualization core-metrics-results-hindgut-7700/weighted-unifrac-diet-significance.qzv \
+  --p-pairwise
+
+#qiime diversity Treatment
+
+#!/bin/sh
+
+
+module load miniconda3/24.9.2
+conda activate qiime2-amplicon-2024.10
+
+qiime diversity beta-group-significance \
+  --i-distance-matrix core-metrics-results-hindgut-7700/weighted_unifrac_distance_matrix.qza \
+  --m-metadata-file beetle_metadata.tsv \
+  --m-metadata-column Treatment \
+  --o-visualization core-metrics-results-hindgut-7700/weighted-unifrac-treatment-significance.qzv \
+  --p-pairwise
+  
+
+#taxa bar plots
+
+#!/bin/sh
+
+
+module load miniconda3/24.9.2
+conda activate qiime2-amplicon-2024.10
+
+qiime taxa barplot \
+  --i-table hindgut-filtered-table.qza \
+  --i-taxonomy taxonomy.qza \
+  --m-metadata-file beetle_metadata.tsv \
+  --o-visualization hindgut-taxa-bar-plots.qzv
+
+#Saved Visualization to: all-taxa-bar-plots.qzv
+
+
+#relative to grass
+#!/bin/sh
+
+
+qiime composition ancombc \
+  --i-table hindgut-filtered-table.qza \
+  --m-metadata-file beetle_metadata.tsv \
+  --p-formula 'Diet' \
+  --o-differentials ancombc-diet.qza
+
+qiime composition da-barplot \
+  --i-data ancombc-diet.qza \
+  --p-significance-threshold 0.001 \
+  --o-visualization da-barplot-diet.qzv
+  
+
+#to change relative to silage
+#have not done this yet
+qiime composition ancombc \
+  --i-table hindgut-filtered-table.qza \
+  --m-metadata-file beetle_metadata.tsv \
+  --p-formula 'Diet' \
+  --p-reference-levels Diet::Silage \
+  --o-differentials ancombc-diet.qza
+  
+#collapse on level 6 taxa
+  qiime taxa collapse \
+  --i-table hindgut-filtered-table.qza \
+  --i-taxonomy taxonomy.qza \
+  --p-level 6 \
+  --o-collapsed-table hindgut-filtered-table-l6.qza
+
+qiime composition ancombc \
+  --i-table hindgut-filtered-table-l6.qza\
+  --m-metadata-file beetle_metadata.tsv \
+  --p-formula 'Diet' \
+  --o-differentials l6-ancombc-diet.qza
+
+qiime composition da-barplot \
+  --i-data l6-ancombc-diet.qza \
+  --p-significance-threshold 0.001 \
+  --p-level-delimiter ';' \
+  --o-visualization l6-da-barplot-diet.qzv
+  
+
+#collapse on level 5 taxa
+qiime taxa collapse \
+  --i-table hindgut-filtered-table.qza \
+  --i-taxonomy taxonomy.qza \
+  --p-level 5 \
+  --o-collapsed-table hindgut-filtered-table-l5.qza
+
+qiime composition ancombc \
+  --i-table hindgut-filtered-table-l5.qza\
+  --m-metadata-file beetle_metadata.tsv \
+  --p-formula 'Diet' \
+  --o-differentials l5-ancombc-diet.qza
+
+qiime composition da-barplot \
+  --i-data l5-ancombc-diet.qza \
+  --p-significance-threshold 0.001 \
+  --p-level-delimiter ';' \
+  --o-visualization l5-da-barplot-diet.qzv
+  
+
+#treatment ancombc 
+
+qiime composition ancombc \
+  --i-table hindgut-filtered-table.qza\
+  --m-metadata-file beetle_metadata.tsv \
+  --p-formula 'Treatment' \
+  --p-reference-levels Treatment::AB \
+  --o-differentials ancombc-treatment-refAB.qza
+
+qiime composition da-barplot \
+  --i-data ancombc-treatment-refAB.qza \
+  --p-significance-threshold 0.05 \
+  --p-level-delimiter ';' \
+  --o-visualization da-barplot-treatment-refAB-0.05.qzv
+
+
+#Type: Hindgut, Broodball, T0Control, T1 Control, T0MaternalBB, Eggs to compare Diet and Treatment (all except mock community control)
+qiime feature-table filter-samples \
+  --i-table filtered-table.qza \
+  --m-metadata-file beetle_metadata.tsv \
+  --p-where "[Type] IN ('Hindgut', 'Egg', 'Broodball', 'T0Control', 'T1Control', 'T0MaternalBB')" \
+  --o-filtered-table nomock-all-filtered-table.qza  
+
+#make sure to transform to visualization files
+qiime feature-table summarize \
+  --i-table nomock-all-filtered-table.qza    \
+  --o-visualization nomock-all-filtered-table.qzv  \
+  --m-sample-metadata-file beetle_metadata.tsv
+
+
+
+#alpha and beta diversity analysis
+#choose max depth for alpha rarefaction around median frequency from table.qzv
+#Median frequency is 11,692
+#Choose a value that is as high as possible (so you retain more sequences per sample) while excluding as few samples as possible.
+#in this case the lowest sample has 4300.
+
+qiime diversity alpha-rarefaction \
+  --i-table nomock-all-filtered-table.qza  \
+  --i-phylogeny rooted-tree.qza \
+  --p-max-depth 4290 \
+  --m-metadata-file beetle_metadata.tsv \
+  --o-visualization nomock-all-filtered-alpha-rarefaction.qzv 
+
+ 
+#use alphararefaction plot to see where it starts to level out and choose that value or choose value that retains most samples using interactive sample detail from table.qzv: both were 4290 (levels off around 500-but Choose a value that is as high as possible (so you retain more sequences per sample) while excluding as few samples as possible.)
+
+#!/bin/sh
+
+
+module load miniconda3/24.9.2
+conda activate qiime2-amplicon-2024.10
+
+qiime diversity core-metrics-phylogenetic \
+  --i-phylogeny rooted-tree.qza \
+  --i-table nomock-all-filtered-table.qza \
+  --p-sampling-depth 4290 \
+  --m-metadata-file beetle_metadata.tsv \
+  --output-dir nomock-all-core-metrics-results
+
+
+qiime diversity alpha-group-significance \
+  --i-alpha-diversity nomock-all-core-metrics-results/faith_pd_vector.qza \
+  --m-metadata-file beetle_metadata.tsv \
+  --o-visualization nomock-all-core-metrics-results/faith-pd-group-significance.qzv
+
+qiime diversity alpha-group-significance \
+  --i-alpha-diversity nomock-all-core-metrics-results/evenness_vector.qza \
+  --m-metadata-file beetle_metadata.tsv \
+  --o-visualization nomock-all-core-metrics-results/evenness-group-significance.qzv
+  
+#qiime diversity by Diet (runs to slowly when not a batch script)
+
+#!/bin/sh
+
+
+module load miniconda3/24.9.2
+conda activate qiime2-amplicon-2024.10
+
+qiime diversity beta-group-significance \
+  --i-distance-matrix nomock-all-core-metrics-results-hindgut/weighted_unifrac_distance_matrix.qza \
+  --m-metadata-file beetle_metadata.tsv \
+  --m-metadata-column Type \
+  --o-visualization nomock-all-core-metrics-results-hindgut/weighted-unifrac-diet-significance.qzv \
+  --p-pairwise
+  
+
+#taxa bar plots
+
+#!/bin/sh
+
+
+module load miniconda3/24.9.2
+conda activate qiime2-amplicon-2024.10
+
+qiime taxa barplot \
+  --i-table nomock-all-filtered-table.qza \
+  --i-taxonomy taxonomy.qza \
+  --m-metadata-file beetle_metadata.tsv \
+  --o-visualization nomock-all-taxa-bar-plots.qzv
+
+
+
+
+#Type: Broodball, T0Control, T1 Control, T0MaternalBB to compare Diet and Treatment
+qiime feature-table filter-samples \
+  --i-table filtered-table.qza \
+  --m-metadata-file beetle_metadata.tsv \
+  --p-where "[Type] IN ('Broodball', 'T0Control', 'T1Control', 'T0MaternalBB')" \
+  --o-filtered-table broodball-filtered-table.qza  
+
+#make sure to transform to visualization files
+qiime feature-table summarize \
+  --i-table broodball-filtered-table.qza   \
+  --o-visualization broodball-filtered-table.qzv  \
+  --m-sample-metadata-file beetle_metadata.tsv
+  
+
+#alpha and beta diversity analysis
+#choose max depth for alpha rarefaction around median frequency from table.qzv
+#65 samples
+#Median frequency is 11,659
+#Choose a value that is as high as possible (so you retain more sequences per sample) while excluding as few samples as possible.
+#in this case the lowest sample has 4300.
+
+qiime diversity alpha-rarefaction \
+  --i-table broodball-filtered-table.qza  \
+  --i-phylogeny rooted-tree.qza \
+  --p-max-depth 4299 \
+  --m-metadata-file beetle_metadata.tsv \
+  --o-visualization broodball-filtered-alpha-rarefaction.qzv 
+
+
+  
+#use alphararefaction plot to see where it starts to level out and choose that value or choose value that retains most samples using interactive sample detail from table.qzv: both were 4290 (levels off around 500-but Choose a value that is as high as possible (so you retain more sequences per sample) while excluding as few samples as possible.)
+
+#!/bin/sh
+
+
+module load miniconda3/24.9.2
+conda activate qiime2-amplicon-2024.10
+
+qiime diversity core-metrics-phylogenetic \
+  --i-phylogeny rooted-tree.qza \
+  --i-table broodball-filtered-table.qza \
+  --p-sampling-depth 4299 \
+  --m-metadata-file beetle_metadata.tsv \
+  --output-dir broodball-core-metrics-results
+  
+
+#taxa bar plots
+
+#!/bin/sh
+
+
+module load miniconda3/24.9.2
+conda activate qiime2-amplicon-2024.10
+
+qiime taxa barplot \
+  --i-table broodball-filtered-table.qza\
+  --i-taxonomy taxonomy.qza \
+  --m-metadata-file beetle_metadata.tsv \
+  --o-visualization broodball-taxa-bar-plots.qzv
+
+
+
+
+#Type: Hindgut, Brood Ball to compare diet and treatment
+qiime feature-table filter-samples \
+  --i-table filtered-table.qza \
+  --m-metadata-file beetle_metadata.tsv \
+  --p-where "[Type] IN ('Hindgut', 'Broodball')" \
+  --o-filtered-table hindgut-broodball-filtered-table.qza 
+  
+#make sure to transform to visualization files
+qiime feature-table summarize \
+  --i-table hindgut-broodball-filtered-table.qza  \
+  --o-visualization hindgut-broodball-filtered-table.qzv  \
+  --m-sample-metadata-file beetle_metadata.tsv
+  
+
+#alpha and beta diversity analysis
+#choose max depth for alpha rarefaction around median frequency from table.qzv
+#60 samples
+#Median frequency is 13,036.5
+#Choose a value that is as high as possible (so you retain more sequences per sample) while excluding as few samples as possible.
+#in this case the lowest sample has 7719 (hindgut).
+
+qiime diversity alpha-rarefaction \
+  --i-table hindgut-broodball-filtered-table.qza  \
+  --i-phylogeny rooted-tree.qza \
+  --p-max-depth 7700 \
+  --m-metadata-file beetle_metadata.tsv \
+  --o-visualization hindgut-broodball-filtered-alpha-rarefaction.qzv 
+
+
+  
+#use alphararefaction plot to see where it starts to level out and choose that value or choose value that retains most samples using interactive sample detail from table.qzv: both were 7700 (levels off around 2000-but Choose a value that is as high as possible (so you retain more sequences per sample) while excluding as few samples as possible.)
+
+#!/bin/sh
+
+
+module load miniconda3/24.9.2
+conda activate qiime2-amplicon-2024.10
+
+qiime diversity core-metrics-phylogenetic \
+  --i-phylogeny rooted-tree.qza \
+  --i-table hindgut-broodball-filtered-table.qza \
+  --p-sampling-depth 7700 \
+  --m-metadata-file beetle_metadata.tsv \
+  --output-dir hindgut-broodball-core-metrics-results
+  
+
+#taxa bar plots
+
+#!/bin/sh
+
+
+module load miniconda3/24.9.2
+conda activate qiime2-amplicon-2024.10
+
+qiime taxa barplot \
+  --i-table hindgut-broodball-filtered-table.qza \
+  --i-taxonomy taxonomy.qza \
+  --m-metadata-file beetle_metadata.tsv \
+  --o-visualization hindgut-broodball-taxa-bar-plots.qzv
+
+
+
+#Type: Egg, T0MaternalBB, Hindgut, Brood Ball
+qiime feature-table filter-samples \
+  --i-table filtered-table.qza \
+  --m-metadata-file beetle_metadata.tsv \
+  --p-where "[Type] IN ('Egg', 'T0MaternalBB', 'Hindgut', 'Broodball')" \
+  --o-filtered-table egg-T0MB-hindgut-BB-filtered-table.qza 
+  
+#make sure to transform to visualization files
+qiime feature-table summarize \
+  --i-table egg-T0MB-hindgut-BB-filtered-table.qza  \
+  --o-visualization egg-T0MBB-hindgut-BB-filtered-table.qzv  \
+  --m-sample-metadata-file beetle_metadata.tsv
+
+
+#alpha and beta diversity analysis
+
+qiime diversity alpha-rarefaction \
+  --i-table egg-T0MB-hindgut-BB-filtered-table.qza  \
+  --i-phylogeny rooted-tree.qza \
+  --p-max-depth 4299 \
+  --m-metadata-file beetle_metadata.tsv \
+  --o-visualization egg-T0MB-hindgut-BB-filtered-alpha-rarefaction.qzv 
+
+
+  
+#use alphararefaction plot to see where it starts to level out and choose that value or choose value that retains most samples using interactive sample detail from table.qzv: both were 4299 (levels off around 2000-but Choose a value that is as high as possible (so you retain more sequences per sample) while excluding as few samples as possible.)
+
+#!/bin/sh
+
+
+module load miniconda3/24.9.2
+conda activate qiime2-amplicon-2024.10
+
+qiime diversity core-metrics-phylogenetic \
+  --i-phylogeny rooted-tree.qza \
+  --i-table egg-T0MB-hindgut-BB-filtered-table.qza \
+  --p-sampling-depth 4299 \
+  --m-metadata-file beetle_metadata.tsv \
+  --output-dir egg-T0MB-hindgut-BB-core-metrics-results
+  
+
+#taxa bar plots
+
+#!/bin/sh
+
+
+module load miniconda3/24.9.2
+conda activate qiime2-amplicon-2024.10
+
+qiime taxa barplot \
+  --i-table egg-T0MB-hindgut-BB-filtered-table.qza \
+  --i-taxonomy taxonomy.qza \
+  --m-metadata-file beetle_metadata.tsv \
+  --o-visualization egg-T0MB-hindgut-BB-taxa-bar-plots.qzv
+
+
+
+#realized there are still Archaea samples: before should be 4428 and now should be 4417
+
+qiime taxa filter-table \
+  --i-table hindgut-filtered-table.qza \
+  --i-taxonomy taxonomy.qza \
+  --p-include d__Bacteria \
+  --o-filtered-table hindgut-filtered-table-Bacteria.qza
+
+
+#make sure to transform to visualization files
+qiime feature-table summarize \
+  --i-table hindgut-filtered-table-Bacteria.qza  \
+  --o-visualization hindgut-filtered-table-Bacteria.qzv  \
+  --m-sample-metadata-file beetle_metadata.tsv
+  
+
+#taxa bar plots
+
+#!/bin/sh
+
+
+module load miniconda3/24.9.2
+conda activate qiime2-amplicon-2024.10
+
+qiime taxa barplot \
+  --i-table hindgut-filtered-table-Bacteria.qza \
+  --i-taxonomy taxonomy.qza \
+  --m-metadata-file beetle_metadata.tsv \
+  --o-visualization hindgut-filtered-table-Bacteria-taxa-bar-plots.qzv
+
+
+
+
+#calculate chao1 separately
+qiime diversity alpha \
+--i-table hindgut-filtered-table-Bacteria.qza \
+--p-metric chao1 \
+--o-alpha-diversity chao1_values_hindgut_filtered_table_Bacteria.qza
+
+qiime metadata tabulate \
+  --m-input-file chao1_values_hindgut_filtered_table_Bacteria.qza \
+  --o-visualization chao1_values_hindgut_filtered_table_Bacteria.qzv
+
+
+#Type: Larval Broodball only
+
+qiime taxa filter-table \
+  --i-table filtered-table.qza \
+  --i-taxonomy taxonomy.qza \
+  --p-include d__Bacteria \
+  --o-filtered-table filtered-table-Bacteria.qza
+  
+qiime feature-table filter-samples \
+  --i-table filtered-table-Bacteria.qza \
+  --m-metadata-file beetle_metadata.tsv \
+  --p-where "[Type] IN ('Broodball')" \
+  --o-filtered-table only-broodball-filtered-table-Bacteria.qza  
+
+#make sure to transform to visualization files
+qiime feature-table summarize \
+  --i-table only-broodball-filtered-table-Bacteria.qza    \
+  --o-visualization only-broodball-filtered-table-Bacteria.qzv  \
+  --m-sample-metadata-file beetle_metadata.tsv
+  
+
+#alpha and beta diversity analysis
+
+
+qiime diversity alpha-rarefaction \
+  --i-table only-broodball-filtered-table-Bacteria.qza  \
+  --i-phylogeny rooted-tree.qza \
+  --p-max-depth 12453 \
+  --m-metadata-file beetle_metadata.tsv \
+  --o-visualization only-broodball-filtered-table-Bacteria-alpha-rarefaction.qzv 
+  
+  
+
+
+#this generates a rarefaction curve
+qiime diversity alpha-rarefaction \
+  --i-table only-broodball-filtered-table-Bacteria.qza  \
+  --i-phylogeny rooted-tree.qza \
+  --p-max-depth 12453 \
+  --m-metadata-file beetle_metadata.tsv \
+  --p-metrics chao1 \
+  --o-visualization chao1-only-broodball-filtered-table-Bacteria-alpha-rarefaction.qzv
+
+
+#calculate chao1 separately
+qiime diversity alpha \
+--i-table only-broodball-filtered-table-Bacteria.qza \
+--p-metric chao1 \
+--o-alpha-diversity chao1_values.qza
+
+qiime metadata tabulate \
+  --m-input-file chao1_values.qza \
+  --o-visualization chao1_values.qzv
+
+#!/bin/sh
+
+
+module load miniconda3/24.9.2
+conda activate qiime2-amplicon-2024.10
+
+qiime diversity core-metrics-phylogenetic \
+  --i-phylogeny rooted-tree.qza \
+  --i-table only-broodball-filtered-table-Bacteria.qza \
+  --p-sampling-depth 8357 \
+  --m-metadata-file beetle_metadata.tsv \
+  --output-dir only-broodball-Bacteria-core-metrics-results
+  
+
+#taxa bar plots
+
+
+module load miniconda3/24.9.2
+conda activate qiime2-amplicon-2024.10
+
+qiime taxa barplot \
+  --i-table only-broodball-filtered-table-Bacteria.qza \
+  --i-taxonomy taxonomy.qza \
+  --m-metadata-file beetle_metadata.tsv \
+  --o-visualization only-broodball-filtered-table-Bacteria-taxa-bar-plots.qzv
+
+
+
+##########################################################################################
+#CORE MICROBIOME IN qiime2
+module load miniconda3/24.9.2
+conda activate qiime2-amplicon-2024.10
+
+qiime feature-table core-features \
+   --i-table hindgut-filtered-table-Bacteria.qza \
+   --o-visualization core_feature_hindgut-filtered-table-Bacteria.qzv
+   
+#Saved Visualization to: core_feature_hindgut-filtered-table-Bacteria.qzv
+   
+
+#see by diet Silage
+qiime feature-table filter-samples \
+  --i-table hindgut-filtered-table-Bacteria.qza \
+  --m-metadata-file beetle_metadata.tsv \
+  --p-where "[Diet] IN ('Silage')" \
+  --o-filtered-table only-silage-hindgut-filtered-table-Bacteria.qza  
+
+#make sure to transform to visualization files
+qiime feature-table summarize \
+  --i-table only-silage-hindgut-filtered-table-Bacteria.qza    \
+  --o-visualization only-silage-hindgut-filtered-table-Bacteria.qzv  \
+  --m-sample-metadata-file beetle_metadata.tsv
+  
+
+qiime feature-table core-features \
+   --i-table only-silage-hindgut-filtered-table-Bacteria.qza  \
+   --o-visualization core_feature-only-silage-hindgut-filtered-table-Bacteria.qzv
+
+#Saved Visualization to: core_feature-only-silage-hindgut-filtered-table-Bacteria.qzv
+
+
+#by Hay diet
+qiime feature-table filter-samples \
+  --i-table hindgut-filtered-table-Bacteria.qza \
+  --m-metadata-file beetle_metadata.tsv \
+  --p-where "[Diet] IN ('Hay')" \
+  --o-filtered-table only-hay-hindgut-filtered-table-Bacteria.qza  
+
+#make sure to transform to visualization files
+qiime feature-table summarize \
+  --i-table only-hay-hindgut-filtered-table-Bacteria.qza   \
+  --o-visualization only-hay-hindgut-filtered-table-Bacteria.qzv  \
+  --m-sample-metadata-file beetle_metadata.tsv
+  
+
+qiime feature-table core-features \
+   --i-table only-hay-hindgut-filtered-table-Bacteria.qza  \
+   --o-visualization core_feature-only-hay-hindgut-filtered-table-Bacteria.qzv
+
+#Saved Visualization to: core_feature-only-hay-hindgut-filtered-table-Bacteria.qzv
+
+
+#by Grass diet
+qiime feature-table filter-samples \
+  --i-table hindgut-filtered-table-Bacteria.qza \
+  --m-metadata-file beetle_metadata.tsv \
+  --p-where "[Diet] IN ('Grass')" \
+  --o-filtered-table only-grass-hindgut-filtered-table-Bacteria.qza  
+
+#make sure to transform to visualization files
+qiime feature-table summarize \
+  --i-table only-grass-hindgut-filtered-table-Bacteria.qza   \
+  --o-visualization only-grass-hindgut-filtered-table-Bacteria.qzv  \
+  --m-sample-metadata-file beetle_metadata.tsv
+  
+
+qiime feature-table core-features \
+   --i-table only-grass-hindgut-filtered-table-Bacteria.qza  \
+   --o-visualization core_feature-only-grass-hindgut-filtered-table-Bacteria.qzv
+
+#Saved Visualization to: core_feature-only-grass-hindgut-filtered-table-Bacteria.qzv
+
